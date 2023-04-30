@@ -10,6 +10,13 @@ import haxe.net.WebSocket;
 import haxe.net.Socket2;
 
 
+typedef ClientInfo = {
+    nextPing: Float,
+    lastPong: Float,
+    socket: WebSocket,
+}
+
+
 class Server {
 
     private static var SID_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYA0123456789";
@@ -19,7 +26,7 @@ class Server {
     public var maxPayload = 100000;
 
     private var http: HTTPServer;
-    private var sessions: Map<String, WebSocket> = [];
+    private var sessions: Map<String, ClientInfo> = [];
 
     public function new(
         ?webserver: HTTPServer,
@@ -38,8 +45,32 @@ class Server {
 
     public function process() {
         // TODO: move to thread
-        for (sid => ws in this.sessions.keyValueIterator()) {
-            ws.process();
+        var now = haxe.Timer.stamp();
+        var toRemove: Array<String> = [];
+        for (sid => state in this.sessions.keyValueIterator()) {
+            try {
+                var expiry = state.lastPong + this.pingInterval + this.pingTimeout;
+                if (expiry < now) {
+                    // end session
+                    state.socket.close();
+                    toRemove.push(sid);
+                    continue;
+                }
+                if (state.nextPing <= now) {
+                    this.sendPacket(state, new Packet(PING, null));
+                    state.nextPing = now + this.pingInterval;
+                }
+                if (state.socket != null) {
+                    state.socket.process();
+                }
+            } catch (err) {
+                trace('error processing client: $err');
+                toRemove.push(sid);
+            }
+        }
+
+        for (sid in toRemove) {
+            this.sessions.remove(sid);
         }
     }
 
@@ -89,10 +120,14 @@ class Server {
                         pingTimeout: this.pingTimeout * 1000,
                         maxPayload: this.maxPayload,
                     });
-                    this.sessions[sid] = null;
+                    this.sessions[sid] = {
+                        socket: null,
+                        nextPing: haxe.Timer.stamp() + this.pingInterval,
+                        lastPong: haxe.Timer.stamp()
+                    };
                     var packet = new Packet(OPEN, PString(payload));
                     return this.packetResponse(packet);
-                } else if (this.sessions.exists(sid) && this.sessions[sid] == null) {
+                } else if (this.sessions.exists(sid) && this.sessions[sid].socket == null) {
                     response = new HTTPResponse();
                     // TODO wait for data
                 } else {
@@ -127,15 +162,19 @@ class Server {
     }
 
     private function upgradeToWebsocket(request: HTTPRequest, sid: String) {
-        if (!this.sessions.exists(sid) || this.sessions[sid] != null) {
+        if (!this.sessions.exists(sid) || this.sessions[sid].socket != null) {
             return new HTTPResponse(BadRequest);
         }
 
+        var state = this.sessions[sid];
+
         var socket = Socket2.createFromExistingSocket(request.client);
         var ws = WebSocket.createFromAcceptedSocket(socket);
-        ws.onmessageString = this.onWsString;
-        ws.onmessageBytes = this.onWsBytes;
-        ws.onopen = this.onWsOpen;
+        ws.onmessageString = this.onWsString.bind(state);
+        ws.onmessageBytes = this.onWsBytes.bind(state);
+        ws.onopen = this.onWsOpen.bind(state);
+
+        state.socket = ws;
 
         // we alrady read the http request, inject that data into ws
         var wsDynamic: Dynamic = ws;
@@ -144,23 +183,55 @@ class Server {
         @:privateAccess wsDynamic.httpHeader += request.data;
         @:privateAccess wsDynamic.needHandleData = true;
 
-        sessions[sid] = ws;
-
         var response = new HTTPResponse();
         response.suppress = true;
         return response;
     }
 
-    private function onWsString(string: String) {
-        trace('s: $string');
+    private function onWsString(state: ClientInfo, s: String) {
+        var packet = Packet.decodeString(s);
+        this.handlePacket(state, packet);
     }
 
-    private function onWsBytes(bytes: haxe.io.Bytes) {
-        trace('b: $bytes');
+    private function onWsBytes(state: ClientInfo, b: haxe.io.Bytes) {
+        var packet = Packet.decodeBytes(b);
+        this.handlePacket(state, packet);
     }
 
-    private function onWsOpen() {
-        trace('opened');
+    private function handlePacket(state: ClientInfo, packet: Packet) {
+        switch (packet.type) {
+            case UPGRADE: this.sendPacket(state, new Packet(NOOP, null));
+            case MESSAGE: this.onMessage(state, packet.data);
+            case CLOSE: // TODO
+            case PING: this.handlePing(state, packet);
+            case PONG: this.handlePong(state, packet);
+            case OPEN:
+            case NOOP:
+        }
+    }
+
+    private function onWsOpen(state: ClientInfo) {
+    }
+
+    private function handlePing(state: ClientInfo, packet: Packet) {
+        switch (packet.data) {
+            case PString("probe"):
+                this.sendWsPacket(state.socket, new Packet(PONG, packet.data));
+            default:
+        }
+    }
+
+    private function handlePong(state: ClientInfo, packet: Packet) {
+        state.lastPong = haxe.Timer.stamp();
+    }
+
+    private function sendWsPacket(ws: WebSocket, packet: Packet) {
+        switch (packet.encode()) {
+            case PString(s):
+                ws.sendString(s);
+            case PBinary(b):
+                ws.sendBytes(b);
+        }
     }
 
     private function generateSid() {
@@ -180,4 +251,14 @@ class Server {
         return sid;
     }
 
+    private function sendPacket(state: ClientInfo, packet: Packet) {
+        if (state.socket != null) {
+            this.sendWsPacket(state.socket, packet);
+        } else {
+            // TODO: enqueue polling packet
+        }
+    }
+
+    public dynamic function onMessage(state: ClientInfo, data: StringOrBinary) {
+    }
 }
