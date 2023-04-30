@@ -27,7 +27,9 @@ class Client {
     private var supportedTransports: Array<Transport>;
     private var currentTransport: Transport;
     private var upgrading = false;
+    private var fetching = false;
     private var ws: WebSocket;
+
 
     public var sid (default, null): String = null;
 
@@ -62,6 +64,9 @@ class Client {
         if (this.ws != null) {
             this.ws.process();
         }
+        if (this.currentTransport == POLLING) {
+            this.fetchPollingPackets();
+        }
     }
 
     public function disconnect() {
@@ -69,8 +74,12 @@ class Client {
             case POLLING: this.disconnectPolling();
             case WEBSOCKET: this.disconnectWebsocket();
         }
+        this.currentTransport = null;
         this.state = DISCONNECTED;
+        this.upgrading = false;
+        this.fetching = false;
         this.sid = null;
+        this.url = null;
     }
 
     //
@@ -114,7 +123,8 @@ class Client {
         response: HttpResponse
     ): Void {
         if (response.status < 200 || response.status >= 300) {
-                // TODO: connection refused
+            // TODO: connection refused
+            return;
         }
         var payload = response.content;
         var packets: Array<Packet> = [];
@@ -135,6 +145,18 @@ class Client {
         this.maxPayload = json.maxPayload;
         this.sid = openPacket.json.sid;
 
+        // rewrite the url to include sid in future requests
+        this.url = Url.make({
+            scheme: this.url.scheme,
+            hosts: [this.url.host],
+            path: this.url.path,
+            query: {
+                "EIO": "4",
+                "transport": "polling",
+                "sid": this.sid,
+            },
+        });
+
         this.currentTransport = POLLING;
         this.state = CONNECTED;
         this.onConnect();
@@ -154,14 +176,67 @@ class Client {
     }
 
     private function onConnectHttpError(response: HttpResponse) {
+        this.disconnect();
     }
 
     private function sendPollingPacket(packet: Packet) {
-        throw "TODO: polling send";
+        // TODO: batch send
+        var content: Dynamic = switch (packet.encode()) {
+            case PString(s): s;
+            case PBinary(b): b;
+        }
+
+        new HttpRequest({
+            method: "POST",
+            content: content,
+            url: this.url.toString(),
+            callback: this.onSendHttpResponse,
+            callbackError: this.onSendHttpError,
+        }).send();
+    }
+
+    private function onSendHttpResponse(response: HttpResponse) {
+    }
+
+    private function onSendHttpError(response: HttpResponse) {
+        this.disconnect();
+    }
+
+    private function fetchPollingPackets() {
+        if (!this.fetching && this.sid != null) {
+            this.fetching = true;
+            new HttpRequest({
+                url: this.url.toString(),
+                callback: this.onPacketsHttpResponse,
+                callbackError: this.onPacketsHttpError,
+                timeout: this.pingInterval + this.pingTimeout,
+            }).send();
+        }
+    }
+
+    private function onPacketsHttpResponse(response: HttpResponse) {
+        this.fetching = false;
+        if (response.status < 200 || response.status >= 300) {
+            // TODO: connection refused
+            return;
+        }
+        var payload = response.content;
+        var packets: Array<Packet> = [];
+        if (payload.substr(0, 2) == "d=") {
+            throw "TODO: support jsonp post";
+        } else {
+            packets = [Packet.decodeString(payload)];
+        }
+        for (packet in packets) {
+            this.handlePacket(packet);
+        }
+    }
+
+    private function onPacketsHttpError(response: HttpResponse) {
+        this.disconnect();
     }
 
     private function disconnectPolling() {
-        // TODO;
     }
 
     //
