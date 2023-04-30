@@ -25,16 +25,19 @@ class Server {
     public var pingTimeout: Int;
     public var maxPayload = 100000;
 
+    private var route: String;
     private var http: HTTPServer;
     private var sessions: Map<String, ClientInfo> = [];
 
     public function new(
         ?webserver: HTTPServer,
+        route = "/engine.io/",
         pingInterval = 25,
-        pingTimeout = 20,
+        pingTimeout = 20
     ): Void {
         this.pingInterval = pingInterval;
         this.pingTimeout = pingTimeout;
+        this.route = route;
 
         if (webserver == null) {
             webserver = this.createWebserver();
@@ -81,7 +84,7 @@ class Server {
 
     private function attachWebserver(webserver: HTTPServer) {
         var routes = new RouteMap();
-        routes.add("/engine.io/", this.websocketRoute);
+        routes.add(this.route, this.websocketRoute);
         routes.attach(webserver);
     }
 
