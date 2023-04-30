@@ -1,0 +1,14 @@
+{
+  "name": "haxe-engineio",
+  "url" : "https://github.com/snwhd/haxe-engineio/",
+  "license": "MIT",
+  "tags": ["engine.io", "engineio", "cpp"],
+  "description": "Haxe implementation of engine.io",
+  "version": "0.0.1",
+  "classPath": "src/",
+  "releasenote": ".",
+  "contributors": ["snwhd"],
+  "dependencies": {
+    "colyseus-websocket": ""
+  }
+}

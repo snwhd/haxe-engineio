@@ -1,0 +1,4 @@
+-cp src
+-cpp test
+-main engineio.test.Main
+-debug
