@@ -11,6 +11,7 @@
   "dependencies": {
     "colyseus-websocket": "",
     "tink-url": "",
-    "akifox-asynchttp": ""
+    "akifox-asynchttp": "",
+    "hx_webserver": ""
   }
 }

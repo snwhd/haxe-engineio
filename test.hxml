@@ -3,6 +3,7 @@
 -lib colyseus-websocket
 -lib tink_url
 -lib akifox-asynchttp
+-lib hx_webserver
 -main engineio.test.Main
 -debug
 -D no-deprecation-warnings
