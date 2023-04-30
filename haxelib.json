@@ -9,6 +9,8 @@
   "releasenote": ".",
   "contributors": ["snwhd"],
   "dependencies": {
-    "colyseus-websocket": ""
+    "colyseus-websocket": "",
+    "tink-url": "",
+    "akifox-asynchttp": ""
   }
 }

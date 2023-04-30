@@ -7,7 +7,7 @@ class Packet {
     public var data (default, null): StringOrBinary;
     public var json (get, null): Dynamic;
 
-    public function new(type: PacketType, data: Dynamic) {
+    public function new(type: PacketType, data: StringOrBinary) {
         this.type = type;
         this.data = data;
     }
@@ -24,10 +24,10 @@ class Packet {
 
     public function encode(b64=false) : StringOrBinary {
         var typeInt: Int = this.type;
+
         switch (this.data) {
             case PString(s): {
-                var json = haxe.Json.stringify(this.data);
-                return PString('$typeInt$json');
+                return PString('$typeInt$s');
             }
             case PBinary(b): {
                 if (b64) {
@@ -38,6 +38,7 @@ class Packet {
                     return PBinary(b);
                 }
             }
+            case null: return PString('$typeInt');
         }
     }
 
@@ -61,7 +62,7 @@ class Packet {
     }
 
     public static function decodeBytes(b: haxe.io.Bytes): Packet {
-        return new Packet(MESSAGE, b);
+        return new Packet(MESSAGE, PBinary(b));
     }
 
 }
