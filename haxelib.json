@@ -10,7 +10,7 @@
   "contributors": ["snwhd"],
   "dependencies": {
     "colyseus-websocket": "",
-    "tink-url": "",
+    "tink_url": "",
     "akifox-asynchttp": "",
     "hx_webserver": ""
   }
