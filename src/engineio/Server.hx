@@ -14,6 +14,7 @@ typedef ClientInfo = {
     nextPing: Float,
     lastPong: Float,
     socket: WebSocket,
+    sid: String,
 }
 
 
@@ -39,36 +40,33 @@ class Server {
         this.pingTimeout = pingTimeout;
         this.route = route;
 
-        if (webserver == null) {
-            webserver = this.createWebserver();
-        }
-        this.attachWebserver(webserver);
-        this.http = webserver;
+        this.http = this.setupWebserver(webserver);
     }
 
+    private function setupWebserver(webserver: HTTPServer): HTTPServer {
+        if (webserver == null) {
+            webserver = new HTTPServer("0.0.0.0", 8080, false);
+        }
+        var routes = new RouteMap();
+        routes.add(this.route, this.websocketRoute);
+        routes.attach(webserver);
+        return webserver;
+    }
+
+    // Server.process() should be frequently called to process incoming websocket
+    // events and send PING/PONG packets. TODO: add a function to handle this in
+    // a separate thread.
     public function process() {
-        // TODO: move to thread
         var now = haxe.Timer.stamp();
         var toRemove: Array<String> = [];
         for (sid => state in this.sessions.keyValueIterator()) {
             try {
-                var expiry = state.lastPong + this.pingInterval + this.pingTimeout;
-                if (expiry < now) {
-                    // end session
-                    state.socket.close();
+                if (!this.processClient(state, now)) {
                     toRemove.push(sid);
-                    continue;
-                }
-                if (state.nextPing <= now) {
-                    this.sendPacket(state, new Packet(PING, null));
-                    state.nextPing = now + this.pingInterval;
-                }
-                if (state.socket != null) {
-                    state.socket.process();
                 }
             } catch (err) {
-                trace('error processing client: $err');
                 toRemove.push(sid);
+                trace('error processing client: $err');
             }
         }
 
@@ -77,20 +75,30 @@ class Server {
         }
     }
 
-    private function createWebserver() {
-        var webserver = new HTTPServer("0.0.0.0", 8080, true);
-        return webserver;
+    private function processClient(state: ClientInfo, now: Float): Bool {
+        var expiry = state.lastPong + this.pingInterval + this.pingTimeout;
+        if (expiry < now) {
+            state.socket.close();
+            return false;
+        }
+        if (state.nextPing <= now) {
+            this.sendPacket(state, new Packet(PING, null));
+            state.nextPing = now + this.pingInterval;
+        }
+        if (state.socket != null) {
+            state.socket.process();
+        }
+        return true;
     }
 
-    private function attachWebserver(webserver: HTTPServer) {
-        var routes = new RouteMap();
-        routes.add(this.route, this.websocketRoute);
-        routes.attach(webserver);
-    }
+    //
+    // transport: polling
+    //
 
     private function websocketRoute(request: HTTPRequest): HTTPResponse {
         var query = Query.fromRequest(request);
         if (query.get("EIO") != "4") {
+            _debug("invalid request: EIO");
             return new HTTPResponse(BadRequest);
         }
 
@@ -99,7 +107,9 @@ class Server {
         return switch (request.methods[0]) {
             case "GET": this.handleGet(request, sid, transport);
             case "POST": this.handlePost(request, sid, transport);
-            default: new HTTPResponse(MethodNotAllowed);
+            case method:
+                _debug('invalid request: method $method');
+                new HTTPResponse(MethodNotAllowed);
         }
     }
 
@@ -108,48 +118,51 @@ class Server {
         sid: String,
         transport: String
     ): HTTPResponse {
-        var response: HTTPResponse;
-        switch (transport) {
-            case "websocket":
-                response = this.upgradeToWebsocket(request, sid);
-            case "polling":
-                if (sid == null) {
-                    // a new connection, send OPEN
-                    var sid = this.generateSid();
-                    var payload = haxe.Json.stringify({
-                        sid: sid,
-                        upgrades: ["websocket"],
-                        pingInterval: this.pingInterval * 1000,
-                        pingTimeout: this.pingTimeout * 1000,
-                        maxPayload: this.maxPayload,
-                    });
-                    this.sessions[sid] = {
-                        socket: null,
-                        nextPing: haxe.Timer.stamp() + this.pingInterval,
-                        lastPong: haxe.Timer.stamp()
-                    };
-                    var packet = new Packet(OPEN, PString(payload));
-                    return this.packetResponse(packet);
-                } else if (this.sessions.exists(sid) && this.sessions[sid].socket == null) {
-                    response = new HTTPResponse();
-                    // TODO wait for data
-                } else {
-                    response = new HTTPResponse(BadRequest);
-                }
-            default:
-                response = new HTTPResponse(BadRequest);
+        if (transport == "websocket") {
+            _debug('[${sid}] request to upgrade');
+            return this.upgradeToWebsocket(request, sid);
         }
-        return response;
-    }
 
-    private function packetResponse(packet: Packet) {
-        var response = new HTTPResponse(Ok);
-        response.addHeader("Content-Type", "text/plain; charset=UTF-8");
-        response.content = switch (packet.encode()) {
-            case PString(s): s;
-            case PBinary(b): b;
+        if (transport != "polling") {
+            _debug('[$sid] invalid transport: $transport');
+            return new HTTPResponse(BadRequest);
+        }
+
+        if (sid != null) {
+            var state = this.sessions.get(sid);
+            if (state == null) {
+                // invalid session id
+                _debug('no such session: $sid');
+                return new HTTPResponse(BadRequest);
+            }
+
+            // valid session
+            // TODO: send queued polling packets
+            return new HTTPResponse();
+        }
+
+        // no sid, new session
+        // a new connection, send OPEN
+        var sid = this.generateSid();
+        _debug('new session: $sid');
+        var payload = haxe.Json.stringify({
+            sid: sid,
+            upgrades: ["websocket"],
+            pingInterval: this.pingInterval * 1000,
+            pingTimeout: this.pingTimeout * 1000,
+            maxPayload: this.maxPayload,
+        });
+        var state = {
+            sid: sid,
+            socket: null,
+            nextPing: haxe.Timer.stamp() + this.pingInterval,
+            lastPong: haxe.Timer.stamp()
         };
-        return response;
+        this.sessions[sid] = state;
+        this.onOpened(state);
+
+        var packet = new Packet(OPEN, PString(payload));
+        return this.packetResponse(packet);
     }
 
     private function handlePost(
@@ -163,6 +176,20 @@ class Server {
         // TODO: receive packet
         return new HTTPResponse(Ok, "ok");
     }
+
+    private function packetResponse(packet: Packet) {
+        var response = new HTTPResponse(Ok);
+        response.addHeader("Content-Type", "text/plain; charset=UTF-8");
+        response.content = switch (packet.encode()) {
+            case PString(s): s;
+            case PBinary(b): b;
+        };
+        return response;
+    }
+
+    //
+    // transport: websocket
+    //
 
     private function upgradeToWebsocket(request: HTTPRequest, sid: String) {
         if (!this.sessions.exists(sid) || this.sessions[sid].socket != null) {
@@ -201,19 +228,33 @@ class Server {
         this.handlePacket(state, packet);
     }
 
+    private function onWsOpen(state: ClientInfo) {
+    }
+
+    //
+    // packet receiving
+    //
+
     private function handlePacket(state: ClientInfo, packet: Packet) {
         switch (packet.type) {
-            case UPGRADE: this.sendPacket(state, new Packet(NOOP, null));
-            case MESSAGE: this.onMessage(state, packet.data);
-            case CLOSE: // TODO
+            case UPGRADE:
+                this.sendPacket(state, new Packet(NOOP, null));
+                this.onUpgraded(state);
+            case MESSAGE: this.handleMessage(state, packet);
+            case CLOSE: this.handleClose(state, packet);
             case PING: this.handlePing(state, packet);
             case PONG: this.handlePong(state, packet);
-            case OPEN:
-            case NOOP:
+            case OPEN: _debug("server received OPEN");
+            case NOOP: _debug("received NOOP");
         }
     }
 
-    private function onWsOpen(state: ClientInfo) {
+    private function handleMessage(state: ClientInfo, packet: Packet) {
+        this.onMessage(state, packet.data);
+    }
+
+    private function handleClose(state: ClientInfo, packet: Packet) {
+        // TODO: close
     }
 
     private function handlePing(state: ClientInfo, packet: Packet) {
@@ -228,6 +269,18 @@ class Server {
         state.lastPong = haxe.Timer.stamp();
     }
 
+    //
+    // packet sending
+    //
+
+    private function sendPacket(state: ClientInfo, packet: Packet) {
+        if (state.socket != null) {
+            this.sendWsPacket(state.socket, packet);
+        } else {
+            // TODO: enqueue polling packet
+        }
+    }
+
     private function sendWsPacket(ws: WebSocket, packet: Packet) {
         switch (packet.encode()) {
             case PString(s):
@@ -236,6 +289,10 @@ class Server {
                 ws.sendBytes(b);
         }
     }
+
+    //
+    // util
+    //
 
     private function generateSid() {
         function nextSid() {
@@ -254,14 +311,25 @@ class Server {
         return sid;
     }
 
-    private function sendPacket(state: ClientInfo, packet: Packet) {
-        if (state.socket != null) {
-            this.sendWsPacket(state.socket, packet);
-        } else {
-            // TODO: enqueue polling packet
-        }
+    private inline function _debug(s: String) {
+        #if debug
+        trace(s);
+        #end
+    }
+
+    //
+    // callbacks
+    //
+
+    public dynamic function onOpened(state: ClientInfo) {
+        _debug('[${state.sid}] connection opened');
+    }
+
+    public dynamic function onUpgraded(state: ClientInfo) {
+        _debug('[${state.sid}] upgrade success');
     }
 
     public dynamic function onMessage(state: ClientInfo, data: StringOrBinary) {
+        _debug('[${state.sid}] message: $data');
     }
 }
