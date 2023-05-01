@@ -439,11 +439,11 @@ class Server {
         state.queue.add(packet);
     }
 
-    private function sendStringMessage(state: ClientInfo, s: String) {
+    public function sendStringMessage(state: ClientInfo, s: String) {
         this.enqueueOutgoingPacket(state, new Packet(MESSAGE, PString(s)));
     }
 
-    private function sendBytesMessage(state: ClientInfo, b: haxe.io.Bytes) {
+    public function sendBytesMessage(state: ClientInfo, b: haxe.io.Bytes) {
         this.enqueueOutgoingPacket(state, new Packet(MESSAGE, PBinary(b)));
     }
 
