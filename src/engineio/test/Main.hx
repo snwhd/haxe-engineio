@@ -16,6 +16,10 @@ class Main {
 
     private static function startServer() {
         var server = new Server();
+        server.onUpgraded = function(client) {
+            server.enqueueOutgoingPacket(client, new Packet(MESSAGE, PString("success")));
+        }
+
         server.debug = true;
         server.startMainThread();
         server.startWebsocketThread();

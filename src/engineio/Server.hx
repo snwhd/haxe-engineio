@@ -347,7 +347,6 @@ class Server {
             case UPGRADE:
                 state.queue = new sys.thread.Deque(); // clear incoming
                 this.enqueueOutgoingPacket(state, new Packet(NOOP, null));
-                this.enqueueOutgoingPacket(state, new Packet(MESSAGE, PString("TODO remove")));
                 this.onUpgraded(state);
             case MESSAGE: this.handleMessage(state, packet);
             case CLOSE: this.handleClose(state, packet);
@@ -383,7 +382,7 @@ class Server {
     // packet sending
     //
 
-    private function enqueueOutgoingPacket(state: ClientInfo, packet: Packet) {
+    public function enqueueOutgoingPacket(state: ClientInfo, packet: Packet) {
         state.queue.add(packet);
     }
 
