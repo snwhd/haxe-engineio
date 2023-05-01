@@ -123,15 +123,19 @@ class Client {
         response: HttpResponse
     ): Void {
         if (response.status < 200 || response.status >= 300) {
-            // TODO: connection refused
+            // TODO: on connection refused
             return;
         }
-        var payload = response.content;
+        var payload: String = response.content;
+        // TODO: non-string content
+
         var packets: Array<Packet> = [];
         if (payload.substr(0, 2) == "d=") {
             throw "TODO: support jsonp post";
-        } else {
-            packets = [Packet.decodeString(payload)];
+        }
+
+        for (chunk in payload.split("\x1e")) {
+            packets.push(Packet.decodeString(chunk));
         }
 
         var openPacket = packets.shift();
@@ -180,7 +184,7 @@ class Client {
     }
 
     private function sendPollingPacket(packet: Packet) {
-        // TODO: batch send
+        // TODO: batch send packets
         var content: Dynamic = switch (packet.encode()) {
             case PString(s): s;
             case PBinary(b): b;
@@ -217,7 +221,7 @@ class Client {
     private function onPacketsHttpResponse(response: HttpResponse) {
         this.fetching = false;
         if (response.status < 200 || response.status >= 300) {
-            // TODO: connection refused
+            // TODO: on connection refused
             return;
         }
         var payload = response.content;
