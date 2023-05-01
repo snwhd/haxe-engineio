@@ -16,7 +16,7 @@ haxelib git haxe-engineio https://github.com/snwhd/haxe-engineio.git
 ## Example Server
 
 ```haxe
-class Main {
+class EngineioServer {
 
     public static function main() {
 
@@ -35,10 +35,11 @@ class Main {
         server.onMessage = function(client, data: StringOrBinary) {
             switch (data) {
                 case PString(s):
-                    // received string data
+                    // received String data
                     trace('echoing "$s" to ${client.sid}');
                     server.sendStringMessage(client, s);
                 case PBinary(b):
+                    // received haxe.io.Bytes data
                     trace('echoing binary data to ${client.sid}');
                     server.sendBytesMessage(client, b);
             }
@@ -55,9 +56,6 @@ class Main {
 
         // do whatever your app does - engine.io is handled in
         // background threads
-        while (true) {
-            Sys.sleep(1.0);
-        }
     }
 
 }
