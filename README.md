@@ -6,12 +6,12 @@ A Haxe implementation of the engine.io protocol.
 - Client tested on cpp, neko
 
 ## Install
-Dependencies for websocket, url parsing, http server and client.
-
 ```
 haxelib git haxe-engineio https://github.com/snwhd/haxe-engineio.git
 # TODO: haxelib install haxe-engineio
 ```
+
+Depends on other packages for websocket, url parsing, http server and client.
 
 ## Example Server
 
