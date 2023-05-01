@@ -16,6 +16,7 @@ class Main {
 
     private static function startServer() {
         var server = new Server();
+        server.debug = true;
         server.startMainThread();
         server.startWebsocketThread();
     }

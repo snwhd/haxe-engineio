@@ -19,10 +19,15 @@ typedef ClientInfo = {
 }
 
 
+enum StateChange {
+    OPENED;
+    CLOSED;
+}
+
+
 /*
- * The server consists of one to three threads:
- *   One created within HTTPServer, for handling incoming http requests
- *      - new connections
+ *   On thread is created on start in HTTPServer for accepting new connectiosn,
+ *   and spawns a new thread for each incoming request.
  *      - long-polling get requests
  *      - incoming packet posts
  *      - websocket upgrade
@@ -42,18 +47,22 @@ class Server {
 
     private static var SID_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYA0123456789";
 
+    public var debug = false;
+
     public var pingInterval: Int;
     public var pingTimeout: Int;
     public var maxPayload = 100000;
 
-    public var processDowntime = 0.2;
-
     private var route: String;
     private var http: HTTPServer;
+
+    public var processDowntime = 0.2;
+
     private var sessions: Map<String, ClientInfo> = [];
+    private var sessionsMutex = new sys.thread.Mutex();
 
     private var queue: sys.thread.Deque<{packet: Packet, sid: String}>;
-    private var opensQueue: sys.thread.Deque<String>;
+    private var stateQueue: sys.thread.Deque<{state: StateChange, sid: String}>;
 
     public function new(
         ?webserver: HTTPServer,
@@ -66,7 +75,7 @@ class Server {
         this.route = route;
 
         this.queue = new sys.thread.Deque();
-        this.opensQueue = new sys.thread.Deque();
+        this.stateQueue = new sys.thread.Deque();
         this.http = this.setupWebserver(webserver);
     }
 
@@ -92,19 +101,25 @@ class Server {
 
     private function processMainThread() {
         // callback for new connections
-        var sid = this.opensQueue.pop(false);
-        while (sid != null) {
-            var state = this.sessions.get(sid);
-            if (state != null) {
-                this.onOpened(state);
+        var item = this.stateQueue.pop(false);
+        while (item != null) {
+            switch (item.state) {
+                case CLOSED:
+                    this.onClosed(item.sid);
+                case OPENED: {
+                    var state = this.getSession(item.sid);
+                    if (state != null) {
+                        this.onOpened(state);
+                    }
+                }
             }
-            sid = this.opensQueue.pop(false);
+            item = this.stateQueue.pop(false);
         }
 
         // handling incoming packets
         var item = this.queue.pop(false);
         while (item != null) {
-            var state = this.sessions.get(item.sid);
+            var state = this.getSession(item.sid);
             if (state != null) {
                 this.handlePacket(state, item.packet);
             }
@@ -125,6 +140,8 @@ class Server {
     public function processWebsocketThread() {
         var now = haxe.Timer.stamp();
         var toRemove: Array<String> = [];
+
+        this.sessionsMutex.acquire();
         for (sid => state in this.sessions.keyValueIterator()) {
             try {
                 if (!this.processClient(state, now)) {
@@ -133,15 +150,17 @@ class Server {
             } catch (err) {
                 var session = this.sessions[sid];
                 if (session.socket != null) {
-                    // TODO: check if open?
                     session.socket.close();
                 }
                 toRemove.push(sid);
                 trace('error processing client: $err');
             }
         }
+        this.sessionsMutex.release();
+
         for (sid in toRemove) {
-            this.sessions.remove(sid);
+            this.removeSession(sid);
+            this.stateChanged(sid, CLOSED);
         }
     }
 
@@ -185,6 +204,8 @@ class Server {
             return new HTTPResponse(BadRequest);
         }
 
+        _debug('http request: ${request.methods}');
+
         var sid = query.get("sid");
         var transport = query.get("transport");
         return switch (request.methods[0]) {
@@ -212,7 +233,7 @@ class Server {
         }
 
         if (sid != null) {
-            var state = this.sessions.get(sid);
+            var state = this.getSession(sid);
             if (state == null) {
                 // invalid session id
                 _debug('no such session: $sid');
@@ -220,7 +241,6 @@ class Server {
             }
 
             // valid session
-            // TODO: send queued polling packets
             return new HTTPResponse();
         }
 
@@ -242,8 +262,8 @@ class Server {
             nextPing: haxe.Timer.stamp() + this.pingInterval,
             lastPong: haxe.Timer.stamp()
         };
-        this.sessions[sid] = state;
-        this.opensQueue.add(sid);
+        this.addSession(state);
+        this.stateChanged(sid, OPENED);
         var packet = new Packet(OPEN, PString(payload));
         return this.packetResponse(packet);
     }
@@ -275,11 +295,10 @@ class Server {
     //
 
     private function upgradeToWebsocket(request: HTTPRequest, sid: String) {
-        if (!this.sessions.exists(sid) || this.sessions[sid].socket != null) {
+        var state = this.getSession(sid);
+        if (state == null || state.socket != null) {
             return new HTTPResponse(BadRequest);
         }
-
-        var state = this.sessions[sid];
 
         var socket = Socket2.createFromExistingSocket(request.client);
         var ws = WebSocket.createFromAcceptedSocket(socket);
@@ -319,7 +338,6 @@ class Server {
     //
 
     private function enqueueIncomingPacket(state: ClientInfo, packet: Packet) {
-        _debug('incoming packet: ${packet.type}');
         this.queue.add({packet: packet, sid: state.sid});
     }
 
@@ -327,7 +345,9 @@ class Server {
         _debug('handling packet: ${packet.type}');
         switch (packet.type) {
             case UPGRADE:
+                state.queue = new sys.thread.Deque(); // clear incoming
                 this.enqueueOutgoingPacket(state, new Packet(NOOP, null));
+                this.enqueueOutgoingPacket(state, new Packet(MESSAGE, PString("TODO remove")));
                 this.onUpgraded(state);
             case MESSAGE: this.handleMessage(state, packet);
             case CLOSE: this.handleClose(state, packet);
@@ -343,7 +363,8 @@ class Server {
     }
 
     private function handleClose(state: ClientInfo, packet: Packet) {
-        // TODO: close
+        this.removeSession(state.sid);
+        this.stateChanged(state.sid, CLOSED);
     }
 
     private function handlePing(state: ClientInfo, packet: Packet) {
@@ -363,12 +384,11 @@ class Server {
     //
 
     private function enqueueOutgoingPacket(state: ClientInfo, packet: Packet) {
-        _debug("enqueing incoming");
         state.queue.add(packet);
     }
 
     private function sendWsPacket(ws: WebSocket, packet: Packet) {
-        _debug("sending ws packet");
+        _debug('sending ws packet: ${packet.type}');
         switch (packet.encode()) {
             case PString(s):
                 ws.sendString(s);
@@ -392,7 +412,7 @@ class Server {
         }
 
         var sid = nextSid();
-        while (this.sessions.exists(sid)) {
+        while (this.sessionExists(sid)) {
             sid = nextSid();
         }
         return sid;
@@ -400,8 +420,41 @@ class Server {
 
     private inline function _debug(s: String) {
         #if debug
-        trace(s);
+        if (this.debug) trace(s);
         #end
+    }
+
+    private function sessionExists(sid: String): Bool {
+        this.sessionsMutex.acquire();
+        var result = this.sessions.exists(sid);
+        this.sessionsMutex.release();
+        return result;
+    }
+
+    private function getSession(sid: String) : Null<ClientInfo> {
+        if (sid == null || sid == "") return null;
+        this.sessionsMutex.acquire();
+        var session = this.sessions.get(sid);
+        this.sessionsMutex.release();
+        return session;
+    }
+
+    private function addSession(info: ClientInfo) {
+        if (info == null || info.sid == null || info.sid == "") return;
+        this.sessionsMutex.acquire();
+        sessions[info.sid] = info;
+        this.sessionsMutex.release();
+    }
+
+    private function removeSession(sid: String) {
+        if (sid == null || sid == "") return;
+        this.sessionsMutex.acquire();
+        sessions.remove(sid);
+        this.sessionsMutex.release();
+    }
+
+    private function stateChanged(sid: String, state: StateChange) {
+        this.stateQueue.add({sid: sid, state: state});
     }
 
     //
@@ -418,5 +471,9 @@ class Server {
 
     public dynamic function onMessage(state: ClientInfo, data: StringOrBinary) {
         _debug('[${state.sid}] message: $data');
+    }
+
+    public dynamic function onClosed(sid: String) {
+        _debug('[$sid] closed');
     }
 }
