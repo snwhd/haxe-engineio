@@ -81,7 +81,7 @@ class Server {
 
     private function setupWebserver(webserver: HTTPServer): HTTPServer {
         if (webserver == null) {
-            webserver = new HTTPServer("0.0.0.0", 8080, false);
+            webserver = new HTTPServer("0.0.0.0", 8080, true);
         }
         var routes = new RouteMap();
         routes.add(this.route, this.websocketRoute);
@@ -153,7 +153,12 @@ class Server {
                     session.socket.close();
                 }
                 toRemove.push(sid);
-                trace('error processing client: $err');
+                _debug('error processing client: $err');
+                _debug('------- Exception -------');
+                for (item in haxe.CallStack.exceptionStack()) {
+                    _debug(' $item');
+                }
+                _debug('-------------------------');
             }
         }
         this.sessionsMutex.release();
@@ -178,11 +183,13 @@ class Server {
             state.nextPing = now + this.pingInterval;
         }
 
-        // send all outgoing packets
-        var packet = state.queue.pop(false);
-        while (packet != null) {
-            this.sendWsPacket(state.socket, packet);
-            packet = state.queue.pop(false);
+        // send all websocket outgoing packets
+        if (state.socket != null) {
+            var packet = state.queue.pop(false);
+            while (packet != null) {
+                this.sendWsPacket(state.socket, packet);
+                packet = state.queue.pop(false);
+            }
         }
 
         // process incoming packets
@@ -198,13 +205,13 @@ class Server {
     //
 
     private function websocketRoute(request: HTTPRequest): HTTPResponse {
+        _debug('http request: ${request.methods}');
+
         var query = Query.fromRequest(request);
         if (query.get("EIO") != "4") {
             _debug("invalid request: EIO");
             return new HTTPResponse(BadRequest);
         }
-
-        _debug('http request: ${request.methods}');
 
         var sid = query.get("sid");
         var transport = query.get("transport");
@@ -240,8 +247,46 @@ class Server {
                 return new HTTPResponse(BadRequest);
             }
 
-            // valid session
-            return new HTTPResponse();
+            var packet = null;
+            var timeout = haxe.Timer.stamp() + 30;
+            while (haxe.Timer.stamp() < timeout) {
+                packet = state.queue.pop(false);
+                if (packet != null) {
+                    break;
+                }
+                Sys.sleep(0.1);
+            }
+
+            if (packet == null) {
+                // timed out
+                return new HTTPResponse();
+            }
+
+            var content: String = '';
+            function appendPacket(packet: Packet) {
+                if (content != '') {
+                    content += "\x1e";
+                }
+                switch (packet.encode(true)) {
+                    case PString(s): content += s;
+                    default: throw "invalid packet encoding for HTTP";
+                }
+                return content.length < this.maxPayload;
+            }
+
+            appendPacket(packet);
+            packet = state.queue.pop(false);
+            while (packet != null) {
+                if (!appendPacket(packet)) {
+                    break;
+                }
+                packet = state.queue.pop(false);
+            }
+
+            var response = new HTTPResponse(Ok);
+            response.addHeader("Content-Type", "text/plain; charset=UTF-8");
+            response.content = content;
+            return response;
         }
 
         // no sid, new session
@@ -273,10 +318,18 @@ class Server {
         sid: String,
         transport: String
     ): HTTPResponse {
-        if (sid == null || transport != "polling") {
+        var state = this.getSession(sid);
+        if (state == null || transport != "polling") {
             return new HTTPResponse(BadRequest);
         }
-        // TODO: receive packet
+
+        var content = request.data;
+        var packets = content.split("\x1e");
+        for (packet in packets) {
+            var p = Packet.decodeString(packet);
+            this.enqueueIncomingPacket(state, p);
+        }
+
         return new HTTPResponse(Ok, "ok");
     }
 
