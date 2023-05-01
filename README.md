@@ -9,8 +9,8 @@ A Haxe implementation of the engine.io protocol.
 Dependencies for websocket, url parsing, http server and client.
 
 ```
-haxelib git haxe_engineio https://github.com/snwhd/haxe_engineio.git
-# TODO: haxelib install haxe_engineio
+haxelib git haxe-engineio https://github.com/snwhd/haxe-engineio.git
+# TODO: haxelib install haxe-engineio
 ```
 
 ## Example Server
