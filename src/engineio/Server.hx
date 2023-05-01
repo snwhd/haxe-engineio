@@ -81,7 +81,7 @@ class Server {
 
     private function setupWebserver(webserver: HTTPServer): HTTPServer {
         if (webserver == null) {
-            webserver = new HTTPServer("0.0.0.0", 8080, true);
+            webserver = new HTTPServer("0.0.0.0", 8080, false);
         }
         var routes = new RouteMap();
         routes.add(this.route, this.websocketRoute);
@@ -437,6 +437,14 @@ class Server {
 
     public function enqueueOutgoingPacket(state: ClientInfo, packet: Packet) {
         state.queue.add(packet);
+    }
+
+    private function sendStringMessage(state: ClientInfo, s: String) {
+        this.enqueueOutgoingPacket(state, new Packet(MESSAGE, PString(s)));
+    }
+
+    private function sendBytesMessage(state: ClientInfo, b: haxe.io.Bytes) {
+        this.enqueueOutgoingPacket(state, new Packet(MESSAGE, PBinary(b)));
     }
 
     private function sendWsPacket(ws: WebSocket, packet: Packet) {

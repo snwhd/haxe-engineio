@@ -11,7 +11,6 @@ class Main {
     public static function main() {
         // Main.testClient();
         Main.startServer();
-        Main.waitForever();
     }
 
     private static function startServer() {
@@ -23,12 +22,6 @@ class Main {
         server.debug = true;
         server.startMainThread();
         server.startWebsocketThread();
-    }
-
-    private static function waitForever() {
-        while (true) {
-            Sys.sleep(0.5);
-        }
     }
 
     private static function testClient() {
