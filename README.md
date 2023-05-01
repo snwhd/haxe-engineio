@@ -15,7 +15,7 @@ haxelib git haxe-engineio https://github.com/snwhd/haxe-engineio.git
 
 ## Example Server
 
-```
+```haxe
 class Main {
 
     public static function main() {
