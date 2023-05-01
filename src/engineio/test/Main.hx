@@ -9,28 +9,40 @@ import engineio.Server;
 class Main {
 
     public static function main() {
-        var server = new Server();
-        // var client = new Client();
-        // client.onConnect = function() {
-        //     trace(client.sid);
-        // }
-        // client.onMessage = function(data) {
-        //     trace(data);
-        // }
-        // client.onDisconnect = function() {
-        //     trace('disconnected');
-        // }
+        // Main.testClient();
+        Main.startServer();
+        Main.waitForever();
+    }
 
-        // client.connect('ws://localhost:8080');
+    private static function startServer() {
+        var server = new Server();
+        server.startMainThread();
+        server.startWebsocketThread();
+    }
+
+    private static function waitForever() {
         while (true) {
-            // client.process();
-            server.process();
-            Sys.sleep(0.1);
+            Sys.sleep(0.5);
+        }
+    }
+
+    private static function testClient() {
+        var client = new Client();
+        client.onConnect = function() {
+            trace(client.sid);
+        }
+        client.onMessage = function(data) {
+            trace(data);
+        }
+        client.onDisconnect = function() {
+            trace('disconnected');
         }
 
-        // // var p = Packet.decodeString('4{"asdf": 1}');
-        // // trace(p.data);
-        // // trace(p.json.asdf);
+        client.connect('ws://localhost:8080');
+        while (true) {
+            client.process();
+            Sys.sleep(0.1);
+        }
     }
 
 }

@@ -14,8 +14,28 @@ typedef ClientInfo = {
     nextPing: Float,
     lastPong: Float,
     socket: WebSocket,
+    queue: sys.thread.Deque<Packet>,
     sid: String,
 }
+
+
+/*
+ * The server consists of one to three threads:
+ *   One created within HTTPServer, for handling incoming http requests
+ *      - new connections
+ *      - long-polling get requests
+ *      - incoming packet posts
+ *      - websocket upgrade
+ *
+ *   One is used for processing websockets, this is started via
+ *   Server.startWebsocketThread(), or manually with Server.processWebsocketThread()
+ *
+ *   Both threads above place packets into a queue for processing in another
+ *   thread, which will trigger the dynamic callbacks (onOpened, onUpgraded,
+ *   onMessage). This thread is started with Server.startMainThread, or
+ *   manuall with Server.processMainThread()
+ *
+ */
 
 
 class Server {
@@ -26,9 +46,14 @@ class Server {
     public var pingTimeout: Int;
     public var maxPayload = 100000;
 
+    public var processDowntime = 0.2;
+
     private var route: String;
     private var http: HTTPServer;
     private var sessions: Map<String, ClientInfo> = [];
+
+    private var queue: sys.thread.Deque<{packet: Packet, sid: String}>;
+    private var opensQueue: sys.thread.Deque<String>;
 
     public function new(
         ?webserver: HTTPServer,
@@ -40,6 +65,8 @@ class Server {
         this.pingTimeout = pingTimeout;
         this.route = route;
 
+        this.queue = new sys.thread.Deque();
+        this.opensQueue = new sys.thread.Deque();
         this.http = this.setupWebserver(webserver);
     }
 
@@ -53,10 +80,49 @@ class Server {
         return webserver;
     }
 
-    // Server.process() should be frequently called to process incoming websocket
-    // events and send PING/PONG packets. TODO: add a function to handle this in
-    // a separate thread.
-    public function process() {
+    public function startMainThread() {
+        sys.thread.Thread.create(() -> {
+            _debug("main thread started");
+            while (true) {
+                this.processMainThread();
+                Sys.sleep(this.processDowntime);
+            }
+        });
+    }
+
+    private function processMainThread() {
+        // callback for new connections
+        var sid = this.opensQueue.pop(false);
+        while (sid != null) {
+            var state = this.sessions.get(sid);
+            if (state != null) {
+                this.onOpened(state);
+            }
+            sid = this.opensQueue.pop(false);
+        }
+
+        // handling incoming packets
+        var item = this.queue.pop(false);
+        while (item != null) {
+            var state = this.sessions.get(item.sid);
+            if (state != null) {
+                this.handlePacket(state, item.packet);
+            }
+            item = this.queue.pop(false);
+        }
+    }
+
+    public function startWebsocketThread() {
+        sys.thread.Thread.create(() -> {
+            _debug("websocket thread started");
+            while (true) {
+                this.processWebsocketThread();
+                Sys.sleep(this.processDowntime);
+            }
+        });
+    }
+
+    public function processWebsocketThread() {
         var now = haxe.Timer.stamp();
         var toRemove: Array<String> = [];
         for (sid => state in this.sessions.keyValueIterator()) {
@@ -65,29 +131,46 @@ class Server {
                     toRemove.push(sid);
                 }
             } catch (err) {
+                var session = this.sessions[sid];
+                if (session.socket != null) {
+                    // TODO: check if open?
+                    session.socket.close();
+                }
                 toRemove.push(sid);
                 trace('error processing client: $err');
             }
         }
-
         for (sid in toRemove) {
             this.sessions.remove(sid);
         }
     }
 
     private function processClient(state: ClientInfo, now: Float): Bool {
+        // kill sockets who don't respond to pings
         var expiry = state.lastPong + this.pingInterval + this.pingTimeout;
         if (expiry < now) {
             state.socket.close();
             return false;
         }
+
+        // send new pings
         if (state.nextPing <= now) {
-            this.sendPacket(state, new Packet(PING, null));
+            this.enqueueOutgoingPacket(state, new Packet(PING, null));
             state.nextPing = now + this.pingInterval;
         }
+
+        // send all outgoing packets
+        var packet = state.queue.pop(false);
+        while (packet != null) {
+            this.sendWsPacket(state.socket, packet);
+            packet = state.queue.pop(false);
+        }
+
+        // process incoming packets
         if (state.socket != null) {
             state.socket.process();
         }
+
         return true;
     }
 
@@ -155,12 +238,12 @@ class Server {
         var state = {
             sid: sid,
             socket: null,
+            queue: new sys.thread.Deque(),
             nextPing: haxe.Timer.stamp() + this.pingInterval,
             lastPong: haxe.Timer.stamp()
         };
         this.sessions[sid] = state;
-        this.onOpened(state);
-
+        this.opensQueue.add(sid);
         var packet = new Packet(OPEN, PString(payload));
         return this.packetResponse(packet);
     }
@@ -220,12 +303,12 @@ class Server {
 
     private function onWsString(state: ClientInfo, s: String) {
         var packet = Packet.decodeString(s);
-        this.handlePacket(state, packet);
+        this.enqueueIncomingPacket(state, packet);
     }
 
     private function onWsBytes(state: ClientInfo, b: haxe.io.Bytes) {
         var packet = Packet.decodeBytes(b);
-        this.handlePacket(state, packet);
+        this.enqueueIncomingPacket(state, packet);
     }
 
     private function onWsOpen(state: ClientInfo) {
@@ -235,10 +318,16 @@ class Server {
     // packet receiving
     //
 
+    private function enqueueIncomingPacket(state: ClientInfo, packet: Packet) {
+        _debug('incoming packet: ${packet.type}');
+        this.queue.add({packet: packet, sid: state.sid});
+    }
+
     private function handlePacket(state: ClientInfo, packet: Packet) {
+        _debug('handling packet: ${packet.type}');
         switch (packet.type) {
             case UPGRADE:
-                this.sendPacket(state, new Packet(NOOP, null));
+                this.enqueueOutgoingPacket(state, new Packet(NOOP, null));
                 this.onUpgraded(state);
             case MESSAGE: this.handleMessage(state, packet);
             case CLOSE: this.handleClose(state, packet);
@@ -260,7 +349,7 @@ class Server {
     private function handlePing(state: ClientInfo, packet: Packet) {
         switch (packet.data) {
             case PString("probe"):
-                this.sendWsPacket(state.socket, new Packet(PONG, packet.data));
+                this.enqueueOutgoingPacket(state, new Packet(PONG, packet.data));
             default:
         }
     }
@@ -273,15 +362,13 @@ class Server {
     // packet sending
     //
 
-    private function sendPacket(state: ClientInfo, packet: Packet) {
-        if (state.socket != null) {
-            this.sendWsPacket(state.socket, packet);
-        } else {
-            // TODO: enqueue polling packet
-        }
+    private function enqueueOutgoingPacket(state: ClientInfo, packet: Packet) {
+        _debug("enqueing incoming");
+        state.queue.add(packet);
     }
 
     private function sendWsPacket(ws: WebSocket, packet: Packet) {
+        _debug("sending ws packet");
         switch (packet.encode()) {
             case PString(s):
                 ws.sendString(s);
