@@ -16,7 +16,10 @@ haxelib git haxe-engineio https://github.com/snwhd/haxe-engineio.git
 ## Example Server
 
 ```haxe
-class EngineioServer {
+import engineio.Server;
+
+
+class Main {
 
     public static function main() {
 
@@ -60,3 +63,39 @@ class EngineioServer {
 
 }
 ```
+
+## Example Client
+
+```haxe
+import engineio.Client;
+
+
+class Main {
+
+    public static function main() {
+        var client = new Client();
+        client.onConnect = function() {
+            trace('connected: ${client.sid}');
+        }
+        client.onMessage = function(data) {
+            trace(data);
+        }
+        client.onDisconnect = function() {
+            trace("disconnected");
+        }
+
+        client.connect("ws://localhost:8080");
+        while (true) {
+            // call client.process in an update loop or another thread
+            client.process();
+            Sys.sleep(0.1);
+        }
+    }
+
+]
+```
+
+## Testing
+
+`eioclient.py` and `uiserver.py` use python's engineio implementation for
+testing haxe-engineio.
