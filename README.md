@@ -1,6 +1,6 @@
 # haxe-engineio
 
-A Haxe implementation of the engine.io protocol.
+A (work in progress) Haxe implementation of the engine.io protocol.
 
 - Server depends on sys, (tested on cpp and neko)
 - Client tested on cpp, neko
