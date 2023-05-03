@@ -15,7 +15,11 @@ class Main {
 
     private static function startServer() {
         var server = new Server();
+        server.onOpened = function(client) {
+            trace('opened');
+        }
         server.onUpgraded = function(client) {
+            trace('upgraded');
             server.enqueueOutgoingPacket(client, new Packet(MESSAGE, PString("success")));
         }
 

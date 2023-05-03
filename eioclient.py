@@ -50,7 +50,7 @@ def test_logs(transport=None):
     else:
         transports = [transport]
     eio = engineio.Client(logger=True) # True)
-    eio.connect('ws://localhost:8080', transports=transports)
+    eio.connect('http://localhost:8080', transports=transports)
     eio.wait()
 
 
