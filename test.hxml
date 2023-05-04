@@ -1,9 +1,10 @@
 -cp src
 -cpp test
--lib colyseus-websocket
--lib tink_url
 -lib akifox-asynchttp
+-lib colyseus-websocket
 -lib hx_webserver
+-lib thx.core
+-lib tink_url
 -main engineio.test.Main
 -debug
 -D no-deprecation-warnings

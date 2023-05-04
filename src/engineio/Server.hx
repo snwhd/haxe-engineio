@@ -9,6 +9,8 @@ import hx_webserver.Query;
 import haxe.net.WebSocket;
 import haxe.net.Socket2;
 
+import thx.Set;
+
 
 typedef ClientInfo = {
     nextPing: Float,
@@ -60,6 +62,7 @@ class Server {
 
     private var sessions: Map<String, ClientInfo> = [];
     private var sessionsMutex = new sys.thread.Mutex();
+    private var sessionsToClose = Set.createString();
 
     private var queue: sys.thread.Deque<{packet: Packet, sid: String}>;
     private var stateQueue: sys.thread.Deque<{state: StateChange, sid: String}>;
@@ -139,11 +142,13 @@ class Server {
 
     public function processWebsocketThread() {
         var now = haxe.Timer.stamp();
-        var toRemove: Array<String> = [];
 
         this.sessionsMutex.acquire();
+        var toRemove = this.sessionsToClose;
+        this.sessionsToClose = Set.createString();
         for (sid => state in this.sessions.keyValueIterator()) {
             try {
+                if (toRemove.exists(sid)) continue;
                 if (!this.processClient(state, now)) {
                     toRemove.push(sid);
                 }
@@ -455,6 +460,12 @@ class Server {
             case PBinary(b):
                 ws.sendBytes(b);
         }
+    }
+
+    public function closeSession(sid: String) {
+        this.sessionsMutex.acquire();
+        this.sessionsToClose.add(sid);
+        this.sessionsMutex.release();
     }
 
     //
