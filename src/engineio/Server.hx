@@ -143,13 +143,14 @@ class Server {
     public function processWebsocketThread() {
         var now = haxe.Timer.stamp();
 
+        var toRemove = [];
+
         this.sessionsMutex.acquire();
-        var toRemove = this.sessionsToClose;
+        var toClose = this.sessionsToClose;
         this.sessionsToClose = Set.createString();
         for (sid => state in this.sessions.keyValueIterator()) {
             try {
-                if (toRemove.exists(sid)) continue;
-                if (!this.processClient(state, now)) {
+                if (!this.processClient(state, now) || toClose.exists(sid)) {
                     toRemove.push(sid);
                 }
             } catch (err) {
@@ -464,6 +465,7 @@ class Server {
 
     public function closeSession(sid: String) {
         this.sessionsMutex.acquire();
+        this.enqueueOutgoingPacket(this.sessions[sid], new Packet(CLOSE, null));
         this.sessionsToClose.add(sid);
         this.sessionsMutex.release();
     }
