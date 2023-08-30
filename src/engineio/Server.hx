@@ -67,6 +67,7 @@ class Server {
     private var queue: sys.thread.Deque<{packet: Packet, sid: String}>;
     private var stateQueue: sys.thread.Deque<{state: StateChange, sid: String}>;
 
+    public var cors: String;
     private var host: String;
     private var port: Int;
 
@@ -229,13 +230,18 @@ class Server {
 
         var sid = query.get("sid");
         var transport = query.get("transport");
-        return switch (request.methods[0]) {
+        var response = switch (request.methods[0]) {
             case "GET": this.handleGet(request, sid, transport);
             case "POST": this.handlePost(request, sid, transport);
             case method:
                 _debug('invalid request: method $method');
                 new HTTPResponse(MethodNotAllowed);
         }
+
+        if (this.cors != null) {
+            response.addHeader("Access-Control-Allow-Origin", this.cors);
+        }
+        return response;
     }
 
     private function handleGet(
