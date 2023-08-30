@@ -67,15 +67,23 @@ class Server {
     private var queue: sys.thread.Deque<{packet: Packet, sid: String}>;
     private var stateQueue: sys.thread.Deque<{state: StateChange, sid: String}>;
 
+    private var host: String;
+    private var port: Int;
+
     public function new(
         ?webserver: HTTPServer,
         route = "/engine.io/",
         pingInterval = 25,
-        pingTimeout = 20
+        pingTimeout = 20,
+        host = "0.0.0.0",
+        port = 8080
     ): Void {
         this.pingInterval = pingInterval;
         this.pingTimeout = pingTimeout;
         this.route = route;
+
+        this.host = host;
+        this.port = port;
 
         this.queue = new sys.thread.Deque();
         this.stateQueue = new sys.thread.Deque();
@@ -84,7 +92,7 @@ class Server {
 
     private function setupWebserver(webserver: HTTPServer): HTTPServer {
         if (webserver == null) {
-            webserver = new HTTPServer("0.0.0.0", 8080, false);
+            webserver = new HTTPServer(this.host, this.port, false);
         }
         var routes = new RouteMap();
         routes.add(this.route, this.websocketRoute);
