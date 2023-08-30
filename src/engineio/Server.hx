@@ -199,7 +199,7 @@ class Server {
         }
 
         // send all websocket outgoing packets
-        if (state.socket != null) {
+        if (state.socket != null && state.socket.readyState == Open) {
             var packet = state.queue.pop(false);
             while (packet != null) {
                 this.sendWsPacket(state.socket, packet);
