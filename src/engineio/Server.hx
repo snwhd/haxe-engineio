@@ -343,7 +343,7 @@ class Server {
             return new HTTPResponse(BadRequest);
         }
 
-        var content = request.data;
+        var content = StringTools.ltrim(request.postData);
         var packets = content.split("\x1e");
         for (packet in packets) {
             var p = Packet.decodeString(packet);
