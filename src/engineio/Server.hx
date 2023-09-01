@@ -12,11 +12,21 @@ import haxe.net.Socket2;
 import thx.Set;
 
 
+enum UpgradeState {
+    NONE;
+    UPGRADING;
+    PROBE;
+    PROBED;
+    UPGRADED;
+}
+
+
 typedef ClientInfo = {
     nextPing: Float,
     lastPong: Float,
     socket: WebSocket,
     queue: sys.thread.Deque<Packet>,
+    upgradeState: UpgradeState,
     sid: String,
 }
 
@@ -96,7 +106,7 @@ class Server {
             webserver = new HTTPServer(this.host, this.port, false);
         }
         var routes = new RouteMap();
-        routes.add(this.route, this.websocketRoute);
+        routes.add(this.route, this.mainHttpRoute);
         routes.attach(webserver);
         return webserver;
     }
@@ -198,13 +208,25 @@ class Server {
             state.nextPing = now + this.pingInterval;
         }
 
-        // send all websocket outgoing packets
-        if (state.socket != null && state.socket.readyState == Open) {
-            var packet = state.queue.pop(false);
-            while (packet != null) {
+        switch (state.upgradeState) {
+            case NONE:
+                // no websocket
+            case UPGRADING:
+                // waiting for probe
+            case PROBE:
+                // received probe
+                state.upgradeState = PROBED;
+                var packet = new Packet(PONG, PString("probe"));
                 this.sendWsPacket(state.socket, packet);
-                packet = state.queue.pop(false);
-            }
+            case PROBED:
+                // waiting for upgrade
+            case UPGRADED:
+                // ready, send outgoing packets
+                var packet = state.queue.pop(false);
+                while (packet != null) {
+                    this.sendWsPacket(state.socket, packet);
+                    packet = state.queue.pop(false);
+                }
         }
 
         // process incoming packets
@@ -219,7 +241,7 @@ class Server {
     // transport: polling
     //
 
-    private function websocketRoute(request: HTTPRequest): HTTPResponse {
+    private function mainHttpRoute(request: HTTPRequest): HTTPResponse {
         _debug('http request: ${request.methods}');
 
         var query = Query.fromRequest(request);
@@ -268,13 +290,17 @@ class Server {
             }
 
             var packet = null;
+            if (state.upgradeState != NONE) {
+                packet = new Packet(NOOP, null);
+                Sys.sleep(0.1); // otherwise socketio spams GETS
+            }
+
             var timeout = haxe.Timer.stamp() + 30;
-            while (haxe.Timer.stamp() < timeout) {
+            while (packet == null && haxe.Timer.stamp() < timeout) {
                 packet = state.queue.pop(false);
-                if (packet != null) {
-                    break;
+                if (packet == null) {
+                    Sys.sleep(0.1);
                 }
-                Sys.sleep(0.1);
             }
 
             if (packet == null) {
@@ -295,12 +321,17 @@ class Server {
             }
 
             appendPacket(packet);
-            packet = state.queue.pop(false);
-            while (packet != null) {
-                if (!appendPacket(packet)) {
-                    break;
-                }
+
+            if (packet.type != NOOP) {
+                // append any immediately ready packets, unless we just noop'd
+                // in which case we likely upgraded to websocket
                 packet = state.queue.pop(false);
+                while (packet != null) {
+                    if (!appendPacket(packet)) {
+                        break;
+                    }
+                    packet = state.queue.pop(false);
+                }
             }
 
             var response = new HTTPResponse(Ok);
@@ -324,6 +355,7 @@ class Server {
             sid: sid,
             socket: null,
             queue: new sys.thread.Deque(),
+            upgradeState: NONE,
             nextPing: haxe.Timer.stamp() + this.pingInterval,
             lastPong: haxe.Timer.stamp()
         };
@@ -373,6 +405,8 @@ class Server {
             return new HTTPResponse(BadRequest);
         }
 
+        state.upgradeState = UPGRADING;
+
         var socket = Socket2.createFromExistingSocket(request.client);
         var ws = WebSocket.createFromAcceptedSocket(socket);
         ws.onmessageString = this.onWsString.bind(state);
@@ -418,8 +452,7 @@ class Server {
         _debug('handling packet: ${packet.type}');
         switch (packet.type) {
             case UPGRADE:
-                state.queue = new sys.thread.Deque(); // clear incoming
-                this.enqueueOutgoingPacket(state, new Packet(NOOP, null));
+                state.upgradeState = UPGRADED;
                 this.onUpgraded(state);
             case MESSAGE: this.handleMessage(state, packet);
             case CLOSE: this.handleClose(state, packet);
@@ -442,7 +475,8 @@ class Server {
     private function handlePing(state: ClientInfo, packet: Packet) {
         switch (packet.data) {
             case PString("probe"):
-                this.enqueueOutgoingPacket(state, new Packet(PONG, packet.data));
+                state.upgradeState = PROBE;
+                // this.enqueueOutgoingPacket(state, new Packet(PONG, packet.data));
             default:
         }
     }
