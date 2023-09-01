@@ -168,14 +168,25 @@ class Server {
         var toClose = this.sessionsToClose;
         this.sessionsToClose = Set.createString();
         for (sid => state in this.sessions.keyValueIterator()) {
+
+            switch (state.upgradeState) {
+                case PROBE, PROBED, UPGRADED:
+                    if (state.socket.readyState != Open) {
+                        _debug('removing dead socket for sid: $sid');
+                        state.socket.close();
+                        toRemove.push(sid);
+                        continue;
+                    }
+                case _:
+            }
+
             try {
                 if (!this.processClient(state, now) || toClose.exists(sid)) {
                     toRemove.push(sid);
                 }
             } catch (err) {
-                var session = this.sessions[sid];
-                if (session.socket != null) {
-                    session.socket.close();
+                if (state.socket != null) {
+                    state.socket.close();
                 }
                 toRemove.push(sid);
                 _debug('error processing client: $err');
@@ -476,7 +487,6 @@ class Server {
         switch (packet.data) {
             case PString("probe"):
                 state.upgradeState = PROBE;
-                // this.enqueueOutgoingPacket(state, new Packet(PONG, packet.data));
             default:
         }
     }
